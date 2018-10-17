@@ -1,0 +1,149 @@
+\documentclass{article}
+\usepackage{blindtext}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{amsmath,amssymb,amsfonts,amsthm}
+\usepackage{biblatex}
+\usepackage{xcolor}
+
+\addbibresource{changes.bib}
+
+\newcommand{\msf}[1]{\ensuremath{\mathsf{#1}}}
+
+\title{Changes to Kleros ICO}
+
+\begin{document}
+\maketitle
+
+The Kleros ico decided against buckets as the justification for using them over buckets in the paper was not sufficient. The paper mentions that buckets are used to save gas, and the argument made is that in practice it would not because storage writes are more expensive than reads.
+
+
+\section{Design}
+
+\subsection{Buckets}
+The bucket design to be implemented in the Truebit ICO will take advantage of Ethereum's gas refund mechanism to mitigate the concerns regarding storage write costs when using buckets.
+Futher, the gas saving mechanism that is used allows many buckets to exist without having to create them before hand and incurr a heave contract set-up cost.
+
+At contract setup the only bucket parameters that need to be sorted out is the spacing between the buckets and the minimum allowable bucket valuation. 
+To allow users to have some significant degree of control over the max cap or the personal minimum they would like to set the number buckets needs to be in the range of thousands of buckets.
+Given the scale of the ICO market and Truebit's position in the field, it is reasonable to first place a minimum on how low bucket valuations can go (e.g. we might want to start the buckets at a \$1,000,000 valuation).
+With the spacing and the minimum valuation defined, Truebit can elect to create at least the first bucket in the list of buckets but that is not necessary as users have some incentive to create buckets (this may lead to an infavorable incentive to not create new buckets as well in some cases but we'll get to the later).
+
+Suppose a user $U$ wanting a submit a bit with maximum cap of $v_{max}$.
+The contract checks if there exists a bucket whose valuation is $v_{max}$. 
+If such a bucket doesn't exist, the contract checks if $v_{max}$ would fall into a bucket, i.e. if the spacing parameter between buckets allows a bucket to exist with a valuation of $v_{max}$. 
+If the bucket needs to be created, the user's transaction will also initialize the bucket in storage as well as some basic meta-information about the bucket. 
+Most importantly, the bucket that is created defines a \texttt{creator} parameter which defines the address of the account that spent the gas to allocate storage for the bucket \footnote{For users that use a custodian service, the address parameter for bucket creation can be specified in the transactions so that address of their choice is recorded}.
+
+As more bids are placed and the bucket are filled up more and more storage is being locked in those buckets.
+To take advantage of this, we propose allowing the creator of the bucket to pocket the gas refund obtained from tearing down the bucket that he created.
+An address clearing the storage location that it wrote to will only receive a refund of $\frac{1}{4}$th of the original cost of the storage \cite{yellowpaper}.
+Assuming that the bucket meta-data only include the valuation of the bucket and perhaps the total volume of bids in the bucket, the cost to a bucket creator would be
+\[ 4~ G_{STORE} + c~ G_{STORE} \]
+where $c$ is the number of words stored for an order.
+We can confidently assume $c \geq 4$ as bids hold a lot of information.
+Therefore, freeing only 4 additional bids to compensates the user for creating the bucket
+
+One may wonder whether the potential for profit from ths refund mechanism can adversely affect the protocol.
+The protocol is not adversely affected by the refund mechanism because it only rewards behavior that is beneficial to the protocol.
+
+The bucket construction only has to be minimally augmented to easily support personal minimums.
+Each bucket makes a distinction between which bids are in the bucket for their maximum cap and which are in for their personal minumums.
+This means that there will be two copies of every order if a personal minimum is set (the default personal minimum of 0 does not get duplicated).
+This applies in the other direction as well where the maximum cap is left at its default value and only a personal minimum is specified.
+This is alright as the bookeeping for a bid needs only to be a global dictionary which indicates if a bid is active or inactive. 
+This additional work has an impact on the gas computation above for creation compensation, however the additional cost of 2 orders is optional on the user's part (elect not to use one of personal min/maximum cap).
+
+
+\section{Current Kerlos IICO Smart Contract}
+\paragraph{Important Data Structures}
+\begin{itemize}
+    \item \texttt{mapping(uint => Bid) public bids}: maps a bidID to a bid structure.
+    \item \texttt{mapping(address => uint[]) public contributorBidIDs}: the bidIDs associated with a particular address. 
+    \item {\color{red} \texttt{mapping(uint => BidBucket) public buckets}: maps the bin number to the bin structure (bid structure states bucket it is in)}.
+\end{itemize}
+
+% CONSTRUCTOR
+\paragraph{\texttt{Constructor}}: 
+The constructor does what you might expect with initializing important deadlines like withdrawing bids and the bonus awarded to users.
+It also creates a head and tail for the linked list, from now on call them $L_{\msf{head}},L_{\msf{tail}}$. 
+
+{\color{red} The constructor creates the first and last bucket: one for an ``infinite'' max cap and one for the smallest personal minimum allowed.}
+
+% SEARCH
+\paragraph{\texttt{search}}: 
+Search function takes a bid number as the \texttt{nextStart} bid (I am not sure how this is set or what this value is). 
+The function iterates forward (or backwards, depending on the maxvaluation in the bid) and returns the bidID of the bid that should be the ``next'' node for this new bid.
+
+{\color{red} This function no longer needs to search for where to insert the bid as every bid, by definition, is associated with one bucket.}
+
+% SUBMITBID
+\paragraph{\texttt{submitBid}}:
+This function ensures the new bid has a max valuation larger than the previous bid and less than the next. 
+It then creates the bid in storage, sets the appropriate next and prev bidIDs. 
+Append the list of this user's submitted bids.
+
+{\color{red} This function first ensures that the max cap and/or min set in the bid is a multiple of the bucket size.
+If
+\begin{itemize}
+    \item Max cap set but no personal min: create only one bid an insert it into the bucket corresponding to the max cap.
+    \item Personal min but no max cap: only insert the bid into the bucket representing this the personal min.
+    \item Both a personal min and max cap: create a copy of the bid and insert one into the bucket of the max cap and one into the bucket of the personal min.
+\end{itemize}
+
+The buckets only contain the bidIDs of the bids that are in each bucket, not the bid structures themselves. Therefore, it is acceptable to create a duplicate.
+As the point moves past the first instance (the personal min) the bid with id \texttt{bidID} is marked as active.
+When the pointer passes the second one, the max cap, the same bid is now marked as inactive.
+If the pointer every moves back, the order in which the two are encountered is known hence handling activating/deactivating is simple.
+
+At the end of each submit bid, the point moves to the next bucket if necessary. 
+At this point, all invalidated bids in the previous bucket can be poked by anybody for a fee (included in the bid).
+In actuality, as people are notified when bids are activated de-activated, they will do it themselves and reclaim their reward.
+Additionally, we can require that only the bidder can poke his own bid until the end of the sale at which point anyone can do so to claim the reward.
+}
+
+% WITHDRAW
+\paragraph{\texttt{withdraw}}: 
+This function allows the owner of the input bidID withdraw the bid before the withdrawal timeout.
+If withdrawing before the end of the bonus period, then the entire contributed amount is returns to the user.
+Otherwise, between the bonus period ending and the end of the withdraw period, the returned amount is scaled down based on how far away from the bonus period deadline you are.
+\texttt{bid.contrib: (bid.contrib * (withdrawalLockTime - now)) / (withdrawalLockTime - endFullBonusTime)}
+
+{ \color{red}
+This function requires no change as the withdraw amount is independent of the buckets.
+The only thing that needs to be changes is that the bidID needs to be removed from the bucket structure for this bid.
+}
+
+% FINALIZE
+\paragraph{\texttt{finalize}}:
+Finalize begins at the tail and searces backward until it finds the \emph{first} bid whos max valuation is less than or equal to the current valuation.
+Some part of the this cutoff bid might be kept in the sale as long as it is permitted by the bid's maximum valuation.
+
+{ \color{red}
+In our case finalize doesn't need to go back and move the pointer, it's been moving this whole time.
+It still does the computation trying to prune bids that are on the edge until their max cap is satisfied.
+This differs from the Kleros ICO in which they only prune the first bid they encounter that is at the limit, so only that person's bid will get included (deviates from the protocol).
+}
+
+% REDEEM
+\paragraph{\texttt{redeem}}:
+Once the sale is finalized, users whose orders are still included in the sale can redeem the tokens they have earned.
+If the order is not included in the sale, the entire contribution amoung is returned to the owner of the bid.
+{ \color{red}
+Unchanged.
+}
+
+{\color{red}
+% DESTROY
+\paragraph{\texttt{destroy}}:
+This function allows the createor of a bucket to destroy it (clear the storage associated with it) to be compensated for creating and perhaps some reward from the additional bids that end up in that bucket.
+There is a deadline check that ensures the creators of buckets have first grabs at the refund.
+If the creator doesn't destroy it before the deadline, anyone can do it. 
+We want to incentivize destroying contract state for the sake of congestion/bloat!
+}
+
+{\bf Note: There are implementation details as to what the bucket structure will look like and how it will hold the bidIDs but that is out of the scope of this document.}
+
+\printbibliography
+
+\end{document}
